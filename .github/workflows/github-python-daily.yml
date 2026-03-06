@@ -1,33 +1,27 @@
 name: Daily GitHub Python Trending Slides
 
-# 每天自动抓取 GitHub 最热 Python 仓库并生成 banana-slides 演示文稿
+# Runs daily, fetches the hottest Python repo on GitHub,
+# generates a slide deck with banana-slides, and emails it.
 #
-# 触发时机：
-#   1. 每天 UTC 02:00（北京时间 10:00）自动运行
-#   2. 手动触发（workflow_dispatch）
-#
-# 所需 Secrets（在 repo Settings → Secrets and variables → Actions 中配置）:
-#   GOOGLE_API_KEY   — Gemini API key（AI_PROVIDER_FORMAT=gemini 时使用）
-#   OPENAI_API_KEY   — OpenAI 兼容 API key（AI_PROVIDER_FORMAT=openai 时使用）
-#   OPENAI_API_BASE  — OpenAI 兼容 base URL（可选，默认 https://aihubmix.com/v1）
-#   TEXT_MODEL       — 文字模型名称（可选）
-#   IMAGE_MODEL      — 图像模型名称（可选）
-#   MAIL_USERNAME    — SMTP 发件人邮箱（如 yourname@gmail.com）
-#   MAIL_PASSWORD    — SMTP 密码 / Gmail App Password
-#   MAIL_SERVER      — SMTP 服务器（可选，默认 smtp.gmail.com）
-#   MAIL_PORT        — SMTP 端口（可选，默认 465）
+# Required Secrets (Settings -> Secrets -> Actions):
+#   OPENAI_API_KEY  - OpenAI-compatible API key
+#   OPENAI_API_BASE - API base URL (optional, defaults to https://aihubmix.com/v1)
+#   MAIL_USERNAME   - Gmail address
+#   MAIL_PASSWORD   - Gmail App Password
+# Optional Variables:
+#   AI_PROVIDER_FORMAT - openai / gemini (default: openai)
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # 每天 UTC 02:00
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       language:
-        description: 'Output language (en / zh / ja)'
+        description: 'Output language: en / zh / ja'
         required: false
         default: 'en'
       since:
-        description: 'Trending period in days (1 = today, 7 = this week)'
+        description: 'Trending window in days (1 = today, 7 = this week)'
         required: false
         default: '1'
 
@@ -36,182 +30,124 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write   # 需要 push 生成的 PPTX
+  contents: write
 
 jobs:
   generate-slides:
-    name: Fetch trending repo & generate slides
+    name: Fetch trending repo and generate slides
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      # ── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── 2. Set up Docker Buildx ────────────────────────────────────────────
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ── 3. Write .env for banana-slides backend ────────────────────────────
       - name: Create .env file
+        env:
+          OPENAI_API_KEY:  ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
+          GOOGLE_API_KEY:  ${{ secrets.GOOGLE_API_KEY }}
         run: |
-          cat > .env <<'EOF'
-          AI_PROVIDER_FORMAT=${{ vars.AI_PROVIDER_FORMAT || 'gemini' }}
-          GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-          GOOGLE_API_BASE=${{ secrets.GOOGLE_API_BASE }}
-          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE=${{ secrets.OPENAI_API_BASE || 'https://aihubmix.com/v1' }}
-          TEXT_MODEL=${{ secrets.TEXT_MODEL }}
-          IMAGE_MODEL=${{ secrets.IMAGE_MODEL }}
+          cat > .env << EOF
+          AI_PROVIDER_FORMAT=${AI_PROVIDER_FORMAT:-openai}
+          OPENAI_API_KEY=${OPENAI_API_KEY}
+          OPENAI_API_BASE=${OPENAI_API_BASE:-https://aihubmix.com/v1}
+          GOOGLE_API_KEY=${GOOGLE_API_KEY}
           SECRET_KEY=github-actions-daily-slides
           OUTPUT_LANGUAGE=${{ github.event.inputs.language || 'en' }}
           BACKEND_PORT=5000
           FLASK_ENV=production
           EOF
 
-      # ── 4. Start banana-slides backend ────────────────────────────────────
-      - name: Build & start backend
+      - name: Build and start backend
         run: |
           docker compose up -d backend
-          echo "Waiting for backend health check..."
+          echo "Waiting for backend..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:5000/health > /dev/null; then
-              echo "✅ Backend is ready (attempt $i)"
+              echo "Backend ready (attempt $i)"
               break
             fi
             if [ "$i" -eq 30 ]; then
-              echo "❌ Backend failed to start"
+              echo "Backend failed to start"
               docker compose logs backend
               exit 1
             fi
-            echo "  ⏳ Waiting... ($i/30)"
+            echo "Waiting $i/30..."
             sleep 5
           done
 
-      # ── 5. Fetch hottest trending Python repo ─────────────────────────────
       - name: Fetch hottest Python repo on GitHub
         id: trending
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN:   ${{ secrets.GITHUB_TOKEN }}
           SINCE_DAYS: ${{ github.event.inputs.since || '1' }}
         run: |
-          SINCE_DATE=$(date -d "${SINCE_DAYS} days ago" +%Y-%m-%d 2>/dev/null || \
-                       date -v-${SINCE_DAYS}d +%Y-%m-%d)
+          SINCE_DATE=$(date -d "${SINCE_DAYS} days ago" +%Y-%m-%d)
+          echo "Searching Python repos created since $SINCE_DATE ..."
 
-          echo "🔍 Searching Python repos created since $SINCE_DATE ..."
-
-          # Save result to file to avoid shell quoting/heredoc issues
           curl -s \
-            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/search/repositories?q=language:python+created:>${SINCE_DATE}&sort=stars&order=desc&per_page=5" \
             -o /tmp/gh_result.json
 
-          # Broaden to 7 days if no results
-          COUNT=$(python3 -c "import json; print(json.load(open('/tmp/gh_result.json')).get('total_count', 0))" 2>/dev/null || echo "0")
+          COUNT=$(python3 -c "import json; print(json.load(open('/tmp/gh_result.json')).get('total_count', 0))" || echo "0")
           if [ "$COUNT" -eq 0 ]; then
-            echo "No new repos today, broadening to last 7 days..."
-            SINCE_DATE=$(date -d "7 days ago" +%Y-%m-%d 2>/dev/null || date -v-7d +%Y-%m-%d)
+            echo "No results for today, broadening to 7 days..."
+            SINCE_DATE=$(date -d "7 days ago" +%Y-%m-%d)
             curl -s \
-              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/search/repositories?q=language:python+pushed:>${SINCE_DATE}&sort=stars&order=desc&per_page=5" \
               -o /tmp/gh_result.json
           fi
 
-          echo "--- API response preview ---"
-          head -c 500 /tmp/gh_result.json
-          echo ""
+          cat /tmp/gh_result.json | python3 -c "import sys,json; d=json.load(sys.stdin); print('total_count:', d.get('total_count'))"
+          python3 scripts/fetch_trending.py
 
-          python3 - <<'PYEOF'
-import json, os, sys
-
-with open('/tmp/gh_result.json') as f:
-    data = json.load(f)
-
-items = data.get('items')
-if not items:
-    print("ERROR: No repositories found in API response")
-    print("Full response:", json.dumps(data, indent=2)[:500])
-    sys.exit(1)
-
-repo = items[0]
-name       = repo['full_name']
-desc       = (repo.get('description') or 'A popular Python repository').replace('\n', ' ')
-stars      = repo['stargazers_count']
-url        = repo['html_url']
-topics     = ', '.join(repo.get('topics') or [])
-readme_url = f"https://raw.githubusercontent.com/{name}/HEAD/README.md"
-
-with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
-    fh.write(f"name={name}\n")
-    fh.write(f"desc={desc}\n")
-    fh.write(f"stars={stars}\n")
-    fh.write(f"url={url}\n")
-    fh.write(f"topics={topics}\n")
-    fh.write(f"readme_url={readme_url}\n")
-
-print(f"📦 Top trending: {name}  ⭐ {stars:,}")
-print(f"   {desc}")
-print(f"   Topics: {topics}")
-PYEOF
-
-      # ── 6. Fetch README for richer context ────────────────────────────────
-      - name: Fetch README (best effort)
-        id: readme
+      - name: Fetch README
         run: |
-          README=$(curl -sf "${{ steps.trending.outputs.readme_url }}" | head -c 4000 || echo "")
-          # Write to file to avoid shell quoting issues
-          echo "$README" > /tmp/repo_readme.txt
-          echo "length=${#README}" >> $GITHUB_OUTPUT
+          curl -sf "${{ steps.trending.outputs.readme_url }}" \
+            | head -c 4000 > /tmp/repo_readme.txt || echo "" > /tmp/repo_readme.txt
 
-      # ── 7. Install Python deps for generator script ───────────────────────
-      - name: Install Python requests
-        run: pip install requests --quiet
+      - name: Install Python dependencies
+        run: pip3 install requests --quiet
 
-      # ── 8. Generate slides via banana-slides API ──────────────────────────
       - name: Generate slides
-        env:
-          REPO_NAME:   ${{ steps.trending.outputs.name }}
-          REPO_DESC:   ${{ steps.trending.outputs.desc }}
-          REPO_STARS:  ${{ steps.trending.outputs.stars }}
-          REPO_URL:    ${{ steps.trending.outputs.url }}
-          REPO_TOPICS: ${{ steps.trending.outputs.topics }}
-          LANGUAGE:    ${{ github.event.inputs.language || 'en' }}
-          DATE_TAG:    ${{ env.DATE_TAG }}
         run: |
           DATE_TAG=$(date +%Y-%m-%d)
-          SAFE_NAME=$(echo "$REPO_NAME" | tr '/' '-')
+          SAFE_NAME=$(echo "${{ steps.trending.outputs.name }}" | tr '/' '-')
           OUTPUT_PATH="daily-slides/${DATE_TAG}-${SAFE_NAME}.pptx"
           mkdir -p daily-slides
 
           python3 scripts/generate_trending_slides.py \
-            --repo    "$REPO_NAME" \
-            --desc    "$REPO_DESC" \
-            --stars   "$REPO_STARS" \
-            --url     "$REPO_URL" \
-            --topics  "$REPO_TOPICS" \
+            --repo    "${{ steps.trending.outputs.name }}" \
+            --desc    "${{ steps.trending.outputs.desc }}" \
+            --stars   "${{ steps.trending.outputs.stars }}" \
+            --url     "${{ steps.trending.outputs.url }}" \
+            --topics  "${{ steps.trending.outputs.topics }}" \
             --readme  /tmp/repo_readme.txt \
-            --lang    "$LANGUAGE" \
-            --output  "$OUTPUT_PATH"
+            --lang    "${{ github.event.inputs.language || 'en' }}" \
+            --output  "${OUTPUT_PATH}"
 
-          echo "OUTPUT_PATH=$OUTPUT_PATH" >> $GITHUB_ENV
-          echo "SAFE_NAME=$SAFE_NAME"     >> $GITHUB_ENV
+          echo "OUTPUT_PATH=${OUTPUT_PATH}" >> $GITHUB_ENV
+          echo "SAFE_NAME=${SAFE_NAME}"     >> $GITHUB_ENV
 
-      # ── 9. Commit & push PPTX ─────────────────────────────────────────────
       - name: Commit slides to repository
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add daily-slides/
           git diff --cached --quiet && echo "Nothing to commit" && exit 0
-          git commit -m "🍌 Daily slides: ${{ steps.trending.outputs.name }} (⭐ ${{ steps.trending.outputs.stars }})"
+          git commit -m "Daily slides: ${{ steps.trending.outputs.name }} (stars: ${{ steps.trending.outputs.stars }})"
           git push
 
-      # ── 10. Upload as artifact (always, for debugging) ────────────────────
       - name: Upload PPTX artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -220,37 +156,34 @@ PYEOF
           path: daily-slides/
           retention-days: 30
 
-      # ── 11. Send PPTX via email ────────────────────────────────────────────
-      - name: Send slides by email
+      - name: Email slides
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: ${{ secrets.MAIL_SERVER || 'smtp.gmail.com' }}
-          server_port:    ${{ secrets.MAIL_PORT   || 465 }}
+          server_address: smtp.gmail.com
+          server_port:    465
           secure:         true
           username:       ${{ secrets.MAIL_USERNAME }}
           password:       ${{ secrets.MAIL_PASSWORD }}
-          subject:        "🍌 Daily Slides — ${{ steps.trending.outputs.name }} (⭐ ${{ steps.trending.outputs.stars }})"
+          subject:        "Daily Slides - ${{ steps.trending.outputs.name }} (stars: ${{ steps.trending.outputs.stars }})"
           to:             e0134091@u.nus.edu
           from:           "banana-slides bot <${{ secrets.MAIL_USERNAME }}>"
           body: |
-            Hi 👋
+            Hi,
 
-            Here's today's auto-generated slide deck for the hottest GitHub Python repository!
+            Here is today's auto-generated slide deck for the hottest GitHub Python repository!
 
-            📦  Repository : ${{ steps.trending.outputs.name }}
-            ⭐  Stars      : ${{ steps.trending.outputs.stars }}
-            🔗  URL        : ${{ steps.trending.outputs.url }}
-            📝  Description: ${{ steps.trending.outputs.desc }}
-            🏷️  Topics     : ${{ steps.trending.outputs.topics }}
+            Repository : ${{ steps.trending.outputs.name }}
+            Stars      : ${{ steps.trending.outputs.stars }}
+            URL        : ${{ steps.trending.outputs.url }}
+            Description: ${{ steps.trending.outputs.desc }}
+            Topics     : ${{ steps.trending.outputs.topics }}
 
-            The PPTX is attached. Enjoy! 🚀
+            The PPTX is attached. Enjoy!
 
-            —
-            Generated by banana-slides · ${{ github.repository }}
+            Generated by banana-slides
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           attachments: ${{ env.OUTPUT_PATH }}
 
-      # ── 12. Backend logs on failure ───────────────────────────────────────
       - name: Show backend logs on failure
         if: failure()
         run: docker compose logs backend --tail=100
