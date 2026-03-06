@@ -99,52 +99,65 @@ jobs:
           SINCE_DAYS: ${{ github.event.inputs.since || '1' }}
         run: |
           SINCE_DATE=$(date -d "${SINCE_DAYS} days ago" +%Y-%m-%d 2>/dev/null || \
-                       date -v-${SINCE_DAYS}d +%Y-%m-%d)  # macOS fallback
+                       date -v-${SINCE_DAYS}d +%Y-%m-%d)
 
-          echo "🔍 Searching Python repos created/pushed since $SINCE_DATE ..."
+          echo "🔍 Searching Python repos created since $SINCE_DATE ..."
 
-          # Try by creation date first; fall back to pushed date for wider results
-          RESULT=$(curl -sf \
+          # Save result to file to avoid shell quoting/heredoc issues
+          curl -s \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/search/repositories?q=language:python+created:>$SINCE_DATE&sort=stars&order=desc&per_page=5") || true
+            "https://api.github.com/search/repositories?q=language:python+created:>${SINCE_DATE}&sort=stars&order=desc&per_page=5" \
+            -o /tmp/gh_result.json
 
-          # If no results today, broaden to last 7 days
-          COUNT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['total_count'])" 2>/dev/null || echo "0")
+          # Broaden to 7 days if no results
+          COUNT=$(python3 -c "import json; print(json.load(open('/tmp/gh_result.json')).get('total_count', 0))" 2>/dev/null || echo "0")
           if [ "$COUNT" -eq 0 ]; then
             echo "No new repos today, broadening to last 7 days..."
             SINCE_DATE=$(date -d "7 days ago" +%Y-%m-%d 2>/dev/null || date -v-7d +%Y-%m-%d)
-            RESULT=$(curl -sf \
+            curl -s \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/search/repositories?q=language:python+pushed:>$SINCE_DATE&sort=stars&order=desc&per_page=5")
+              "https://api.github.com/search/repositories?q=language:python+pushed:>${SINCE_DATE}&sort=stars&order=desc&per_page=5" \
+              -o /tmp/gh_result.json
           fi
 
+          echo "--- API response preview ---"
+          head -c 500 /tmp/gh_result.json
+          echo ""
+
           python3 - <<'PYEOF'
-          import sys, json, os
+import json, os, sys
 
-          data = json.loads("""$RESULT""".strip())
-          repo = data['items'][0]
+with open('/tmp/gh_result.json') as f:
+    data = json.load(f)
 
-          name   = repo['full_name']
-          desc   = (repo.get('description') or 'A popular Python repository').replace('"', "'")
-          stars  = repo['stargazers_count']
-          url    = repo['html_url']
-          topics = ', '.join(repo.get('topics') or [])
-          readme_url = f"https://raw.githubusercontent.com/{name}/HEAD/README.md"
+items = data.get('items')
+if not items:
+    print("ERROR: No repositories found in API response")
+    print("Full response:", json.dumps(data, indent=2)[:500])
+    sys.exit(1)
 
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
-              fh.write(f"name={name}\n")
-              fh.write(f"desc={desc}\n")
-              fh.write(f"stars={stars}\n")
-              fh.write(f"url={url}\n")
-              fh.write(f"topics={topics}\n")
-              fh.write(f"readme_url={readme_url}\n")
+repo = items[0]
+name       = repo['full_name']
+desc       = (repo.get('description') or 'A popular Python repository').replace('\n', ' ')
+stars      = repo['stargazers_count']
+url        = repo['html_url']
+topics     = ', '.join(repo.get('topics') or [])
+readme_url = f"https://raw.githubusercontent.com/{name}/HEAD/README.md"
 
-          print(f"📦 Top trending: {name}  ⭐ {stars:,}")
-          print(f"   {desc}")
-          print(f"   Topics: {topics}")
-          PYEOF
+with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+    fh.write(f"name={name}\n")
+    fh.write(f"desc={desc}\n")
+    fh.write(f"stars={stars}\n")
+    fh.write(f"url={url}\n")
+    fh.write(f"topics={topics}\n")
+    fh.write(f"readme_url={readme_url}\n")
+
+print(f"📦 Top trending: {name}  ⭐ {stars:,}")
+print(f"   {desc}")
+print(f"   Topics: {topics}")
+PYEOF
 
       # ── 6. Fetch README for richer context ────────────────────────────────
       - name: Fetch README (best effort)
