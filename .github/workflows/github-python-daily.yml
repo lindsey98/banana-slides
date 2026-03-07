@@ -54,12 +54,11 @@ jobs:
           GOOGLE_API_KEY:  ${{ secrets.GOOGLE_API_KEY }}
         run: |
           cat > .env << EOF
-          AI_PROVIDER_FORMAT=gemini
-          GOOGLE_API_KEY=${GOOGLE_API_KEY}
+          AI_PROVIDER_FORMAT=openai
           OPENAI_API_KEY=${OPENAI_API_KEY}
           OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
-          TEXT_MODEL=gemini-2.0-flash
-          IMAGE_MODEL=nano-banana-pro
+          TEXT_MODEL=gpt-4o
+          IMAGE_MODEL=dall-e-3
           SECRET_KEY=github-actions-daily-slides
           OUTPUT_LANGUAGE=${{ github.event.inputs.language || 'en' }}
           BACKEND_PORT=5000
