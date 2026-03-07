@@ -58,7 +58,7 @@ jobs:
           GOOGLE_API_KEY=${GOOGLE_API_KEY}
           OPENAI_API_KEY=${OPENAI_API_KEY}
           OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
-          TEXT_MODEL=gpt-4o
+          TEXT_MODEL=gemini-2.0-flash
           IMAGE_MODEL=nano-banana-pro
           SECRET_KEY=github-actions-daily-slides
           OUTPUT_LANGUAGE=${{ github.event.inputs.language || 'en' }}
