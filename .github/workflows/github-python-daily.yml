@@ -1,18 +1,12 @@
 name: Daily GitHub Python Trending Report
 
-# Fetches the hottest Python repo on GitHub daily and emails a report.
-#
-# Required Secrets (Settings -> Secrets -> Actions):
-#   MAIL_USERNAME  - Gmail address (e.g. yourname@gmail.com)
-#   MAIL_PASSWORD  - Gmail App Password
-
 on:
   schedule:
-    - cron: '0 2 * * *'   # daily UTC 02:00 (Beijing 10:00)
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       since:
-        description: 'Trending window in days (1 = today, 7 = this week)'
+        description: 'Trending window in days (1=today, 7=this week)'
         required: false
         default: '1'
 
@@ -34,7 +28,7 @@ jobs:
           SINCE_DAYS: ${{ github.event.inputs.since || '1' }}
         run: |
           SINCE_DATE=$(date -d "${SINCE_DAYS} days ago" +%Y-%m-%d)
-          echo "Searching Python repos created since $SINCE_DATE ..."
+          echo "Searching repos since $SINCE_DATE ..."
 
           curl -s \
             -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -42,9 +36,9 @@ jobs:
             "https://api.github.com/search/repositories?q=language:python+created:>${SINCE_DATE}&sort=stars&order=desc&per_page=5" \
             -o /tmp/gh_result.json
 
-          COUNT=$(python3 -c "import json; print(json.load(open('/tmp/gh_result.json')).get('total_count', 0))" || echo "0")
+          COUNT=$(jq '.total_count' /tmp/gh_result.json)
           if [ "$COUNT" -eq 0 ]; then
-            echo "No results, broadening to 7 days..."
+            echo "No results today, broadening to 7 days..."
             SINCE_DATE=$(date -d "7 days ago" +%Y-%m-%d)
             curl -s \
               -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -53,46 +47,49 @@ jobs:
               -o /tmp/gh_result.json
           fi
 
-          python3 scripts/fetch_trending.py
+          NAME=$(jq -r '.items[0].full_name' /tmp/gh_result.json)
+          DESC=$(jq -r '.items[0].description // "A popular Python repository"' /tmp/gh_result.json | tr '\n' ' ')
+          STARS=$(jq -r '.items[0].stargazers_count' /tmp/gh_result.json)
+          URL=$(jq -r '.items[0].html_url' /tmp/gh_result.json)
+          TOPICS=$(jq -r '[.items[0].topics[]?] | join(", ")' /tmp/gh_result.json)
+          README_URL="https://raw.githubusercontent.com/${NAME}/HEAD/README.md"
+
+          echo "name=${NAME}"           >> $GITHUB_OUTPUT
+          echo "desc=${DESC}"           >> $GITHUB_OUTPUT
+          echo "stars=${STARS}"         >> $GITHUB_OUTPUT
+          echo "url=${URL}"             >> $GITHUB_OUTPUT
+          echo "topics=${TOPICS}"       >> $GITHUB_OUTPUT
+          echo "readme_url=${README_URL}" >> $GITHUB_OUTPUT
+
+          echo "Top trending: ${NAME} (stars: ${STARS})"
 
       - name: Fetch README and build report
-        id: report
         run: |
           curl -sf "${{ steps.trending.outputs.readme_url }}" \
             | head -c 6000 > /tmp/readme.txt || echo "(No README available)" > /tmp/readme.txt
 
-          python3 - <<'EOF'
-          import os
+          DATE=$(date '+%Y-%m-%d')
 
-          name   = "${{ steps.trending.outputs.name }}"
-          desc   = "${{ steps.trending.outputs.desc }}"
-          stars  = "${{ steps.trending.outputs.stars }}"
-          url    = "${{ steps.trending.outputs.url }}"
-          topics = "${{ steps.trending.outputs.topics }}"
+          {
+            echo "========================================"
+            echo "Daily GitHub Python Trending Report"
+            echo "${DATE}"
+            echo "========================================"
+            echo ""
+            echo "Repository : ${{ steps.trending.outputs.name }}"
+            echo "Stars      : ${{ steps.trending.outputs.stars }}"
+            echo "URL        : ${{ steps.trending.outputs.url }}"
+            echo "Description: ${{ steps.trending.outputs.desc }}"
+            echo "Topics     : ${{ steps.trending.outputs.topics }}"
+            echo ""
+            echo "----------------------------------------"
+            echo "README"
+            echo "----------------------------------------"
+            cat /tmp/readme.txt
+          } > /tmp/report.txt
 
-          readme = open("/tmp/readme.txt").read()
-
-          report = f"""
-          ========================================
-          Daily GitHub Python Trending Report
-          {os.popen("date '+%Y-%m-%d'").read().strip()}
-          ========================================
-
-          Repository : {name}
-          Stars      : {stars}
-          URL        : {url}
-          Description: {desc}
-          Topics     : {topics or "N/A"}
-
-          ----------------------------------------
-          README
-          ----------------------------------------
-          {readme}
-          """
-
-          open("/tmp/report.txt", "w").write(report)
-          print(report[:300])
-          EOF
+          echo "--- Report preview ---"
+          head -15 /tmp/report.txt
 
       - name: Send report by email
         uses: dawidd6/action-send-mail@v3
