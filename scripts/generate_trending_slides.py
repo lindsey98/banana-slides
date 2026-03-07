@@ -161,7 +161,7 @@ def main():
     # ── Step 3: Generate descriptions (async) ────────────────────────────────
     print("③ Generating page descriptions (async)...")
     desc_resp = api("post", f"/api/projects/{project_id}/generate/descriptions",
-                    json={"language": args.lang, "max_workers": 5})
+                    json={"language": args.lang, "max_workers": 1})
     desc_task_id = desc_resp["data"]["task_id"]
     poll_task(project_id, desc_task_id, "descriptions")
     print("   Descriptions done ✓")
@@ -169,7 +169,7 @@ def main():
     # ── Step 4: Generate images (async) ──────────────────────────────────────
     print("④ Generating slide images (async — this takes a while)...")
     img_resp = api("post", f"/api/projects/{project_id}/generate/images",
-                   json={"use_template": False, "language": args.lang})
+                   json={"use_template": False, "language": args.lang, "max_workers": 1})
     img_task_id = img_resp["data"]["task_id"]
     poll_task(project_id, img_task_id, "images")
     print("   Images done ✓")
