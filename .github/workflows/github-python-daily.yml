@@ -4,11 +4,6 @@ on:
   schedule:
     - cron: '0 2 * * *'
   workflow_dispatch:
-    inputs:
-      since:
-        description: 'Trending window in days (1=today, 7=this week)'
-        required: false
-        default: '1'
 
 concurrency:
   group: github-python-daily
@@ -16,80 +11,23 @@ concurrency:
 
 jobs:
   send-report:
-    name: Fetch trending repo and send report
+    name: Fetch trending repos and send report
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - name: Fetch hottest Python repo on GitHub
-        id: trending
-        env:
-          GH_TOKEN:   ${{ secrets.GITHUB_TOKEN }}
-          SINCE_DAYS: ${{ github.event.inputs.since || '1' }}
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 --quiet
+
+      - name: Generate trending report
+        id: report
         run: |
-          SINCE_DATE=$(date -d "${SINCE_DAYS} days ago" +%Y-%m-%d)
-          echo "Searching repos since $SINCE_DATE ..."
-
-          curl -s \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/search/repositories?q=language:python+created:>${SINCE_DATE}&sort=stars&order=desc&per_page=5" \
-            -o /tmp/gh_result.json
-
-          COUNT=$(jq '.total_count' /tmp/gh_result.json)
-          if [ "$COUNT" -eq 0 ]; then
-            echo "No results today, broadening to 7 days..."
-            SINCE_DATE=$(date -d "7 days ago" +%Y-%m-%d)
-            curl -s \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/search/repositories?q=language:python+pushed:>${SINCE_DATE}&sort=stars&order=desc&per_page=5" \
-              -o /tmp/gh_result.json
-          fi
-
-          NAME=$(jq -r '.items[0].full_name' /tmp/gh_result.json)
-          DESC=$(jq -r '.items[0].description // "A popular Python repository"' /tmp/gh_result.json | tr '\n' ' ')
-          STARS=$(jq -r '.items[0].stargazers_count' /tmp/gh_result.json)
-          URL=$(jq -r '.items[0].html_url' /tmp/gh_result.json)
-          TOPICS=$(jq -r '[.items[0].topics[]?] | join(", ")' /tmp/gh_result.json)
-          README_URL="https://raw.githubusercontent.com/${NAME}/HEAD/README.md"
-
-          echo "name=${NAME}"           >> $GITHUB_OUTPUT
-          echo "desc=${DESC}"           >> $GITHUB_OUTPUT
-          echo "stars=${STARS}"         >> $GITHUB_OUTPUT
-          echo "url=${URL}"             >> $GITHUB_OUTPUT
-          echo "topics=${TOPICS}"       >> $GITHUB_OUTPUT
-          echo "readme_url=${README_URL}" >> $GITHUB_OUTPUT
-
-          echo "Top trending: ${NAME} (stars: ${STARS})"
-
-      - name: Fetch README and build report
-        run: |
-          curl -sf "${{ steps.trending.outputs.readme_url }}" \
-            | head -c 6000 > /tmp/readme.txt || echo "(No README available)" > /tmp/readme.txt
-
-          DATE=$(date '+%Y-%m-%d')
-
-          {
-            echo "========================================"
-            echo "Daily GitHub Python Trending Report"
-            echo "${DATE}"
-            echo "========================================"
-            echo ""
-            echo "Repository : ${{ steps.trending.outputs.name }}"
-            echo "Stars      : ${{ steps.trending.outputs.stars }}"
-            echo "URL        : ${{ steps.trending.outputs.url }}"
-            echo "Description: ${{ steps.trending.outputs.desc }}"
-            echo "Topics     : ${{ steps.trending.outputs.topics }}"
-            echo ""
-            echo "----------------------------------------"
-            echo "README"
-            echo "----------------------------------------"
-            cat /tmp/readme.txt
-          } > /tmp/report.txt
-
-          echo "--- Report preview ---"
-          head -15 /tmp/report.txt
+          python3 scripts/generate_report.py /tmp/report.txt $GITHUB_OUTPUT
+          echo "--- Preview ---"
+          head -20 /tmp/report.txt
 
       - name: Send report by email
         uses: dawidd6/action-send-mail@v3
@@ -99,7 +37,7 @@ jobs:
           secure:         true
           username:       ${{ secrets.MAIL_USERNAME }}
           password:       ${{ secrets.MAIL_PASSWORD }}
-          subject:        "Daily Python Trending: ${{ steps.trending.outputs.name }} (stars: ${{ steps.trending.outputs.stars }})"
+          subject:        "🐍 Python Trending: ${{ steps.report.outputs.top_name }} (+${{ steps.report.outputs.top_stars }} stars this week)"
           to:             e0134091@u.nus.edu
           from:           "GitHub Trending Bot <${{ secrets.MAIL_USERNAME }}>"
           body:           file:///tmp/report.txt
